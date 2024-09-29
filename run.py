@@ -74,7 +74,7 @@ if __name__ == "__main__":
     if not (torch.cuda.is_available() or torch.backends.mps.is_available()):
         device = "cpu"
 
-    print("Device used: ", device)
+    # print("Device used: ", device)
 
     model = SF3D.from_pretrained(
         args.pretrained_model,
@@ -125,12 +125,12 @@ if __name__ == "__main__":
                     remesh=args.remesh_option,
                     vertex_count=args.target_vertex_count,
                 )
-        if torch.cuda.is_available():
-            print("Peak Memory:", torch.cuda.max_memory_allocated() / 1024 / 1024, "MB")
-        elif torch.backends.mps.is_available():
-            print(
-                "Peak Memory:", torch.mps.driver_allocated_memory() / 1024 / 1024, "MB"
-            )
+        # if torch.cuda.is_available():
+        #     print("Peak Memory:", torch.cuda.max_memory_allocated() / 1024 / 1024, "MB")
+        # elif torch.backends.mps.is_available():
+        #     print(
+        #         "Peak Memory:", torch.mps.driver_allocated_memory() / 1024 / 1024, "MB"
+        #     )
 
         if len(image) == 1:
             out_mesh_path = os.path.join(output_dir, str(i), "mesh.glb")

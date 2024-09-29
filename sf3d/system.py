@@ -222,11 +222,13 @@ class SF3D(BaseModule):
         camera_embeds: Optional[Float[Tensor, "B Nv Cc"]]
         camera_embeds = self.camera_embedder(**batch)
 
+        #batch["rgb_cond"] = ([1, 1, 512, 512, 3])
+        #camera_embeds = ([1, 1, 768])
         input_image_tokens: Float[Tensor, "B Nv Cit Nit"] = self.image_tokenizer(
             rearrange(batch["rgb_cond"], "B Nv H W C -> B Nv C H W"),
             modulation_cond=camera_embeds,
         )
-
+        # input_image_tokens = ([1, 1, 1024, 1297])
         input_image_tokens = rearrange(
             input_image_tokens, "B Nv C Nt -> B (Nv Nt) C", Nv=n_input_views
         )
@@ -323,9 +325,11 @@ class SF3D(BaseModule):
         vertex_count: int = -1,
         estimate_illumination: bool = False,
     ) -> Tuple[List[trimesh.Trimesh], dict[str, Any]]:
+        #([1, 512, 512, 3])
         batch["rgb_cond"] = self.image_processor(
             batch["rgb_cond"], self.cfg.cond_image_size
         )
+        #([1, 512, 512, 3])
         batch["mask_cond"] = self.image_processor(
             batch["mask_cond"], self.cfg.cond_image_size
         )
@@ -363,7 +367,7 @@ class SF3D(BaseModule):
                                 "Warning: vertex_count is ignored when remesh is none"
                             )
 
-                    print("After Remesh", mesh.v_pos.shape[0], mesh.t_pos_idx.shape[0])
+                    #print("After Remesh", mesh.v_pos.shape[0], mesh.t_pos_idx.shape[0])
                     mesh.unwrap_uv()
 
                     # Build textures
