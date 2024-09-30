@@ -99,8 +99,6 @@ class Dinov2Embeddings(nn.Module):
 
         num_patches = embeddings.shape[1] - 1
         num_positions = self.position_embeddings.shape[1] - 1
-        if num_patches == num_positions and height == width:
-            return self.position_embeddings
         class_pos_embed = self.position_embeddings[:, 0]
         patch_pos_embed = self.position_embeddings[:, 1:]
         dim = embeddings.shape[-1]
@@ -110,25 +108,20 @@ class Dinov2Embeddings(nn.Module):
         # see discussion at https://github.com/facebookresearch/dino/issues/8
         height, width = height + 0.1, width + 0.1
         patch_pos_embed = patch_pos_embed.reshape(
-            1, int(math.sqrt(num_positions)), int(math.sqrt(num_positions)), dim
+            1, int(torch.sqrt(num_positions)), int(torch.sqrt(num_positions)), dim
         )
+        sh = height / torch.sqrt(num_positions)
+        sw = width / torch.sqrt(num_positions)
         patch_pos_embed = patch_pos_embed.permute(0, 3, 1, 2)
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             scale_factor=(
-                height / math.sqrt(num_positions),
-                width / math.sqrt(num_positions),
+                float(sh),
+                float(sw),
             ),
             mode="bicubic",
             align_corners=False,
         )
-        if (
-            int(height) != patch_pos_embed.shape[-2]
-            or int(width) != patch_pos_embed.shape[-1]
-        ):
-            raise ValueError(
-                "Width or height does not match with the interpolated position embeddings"
-            )
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
 

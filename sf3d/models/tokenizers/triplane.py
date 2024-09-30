@@ -38,8 +38,6 @@ class TriplaneLearnablePositionalEmbedding(BaseModule):
         self, tokens: Float[Tensor, "B Ct Nt"]
     ) -> Float[Tensor, "B 3 Ct Hp Wp"]:
         batch_size, Ct, Nt = tokens.shape
-        assert Nt == self.cfg.plane_size**2 * 3
-        assert Ct == self.cfg.num_channels
         return rearrange(
             tokens,
             "B Ct (Np Hp Wp) -> B Np Ct Hp Wp",

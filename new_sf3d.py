@@ -15,8 +15,6 @@ from PIL import Image
 from safetensors.torch import load_model
 from torch import Tensor
 
-from sf3d.models.isosurface import MarchingTetrahedraHelper
-from sf3d.models.mesh import Mesh
 from sf3d.models.utils import (
     BaseModule,
     ImageProcessor,
@@ -42,7 +40,7 @@ class SF3D(nn.Module):
         default_fovy_deg: float = 40.0
         default_distance: float = 1.6
 
-        camera_embedder_cls: str = 'sf3d.models.camera.LinearCameraEmbedder'
+        camera_embedder_cls: str = 'sf3d.models.new_camera.LinearCameraEmbedder'
         camera_embedder: dict = {'in_channels': 25, 'out_channels': 768, 'conditions': ['c2w_cond', 'intrinsic_normed_cond']}
 
         image_tokenizer_cls = 'sf3d.models.tokenizers.new_image.DINOV2SingleImageTokenizer'
@@ -53,7 +51,7 @@ class SF3D(nn.Module):
         tokenizer_cls: str = 'sf3d.models.tokenizers.triplane.TriplaneLearnablePositionalEmbedding'
         tokenizer: dict = {'plane_size': 96, 'num_channels': 1024}
 
-        backbone_cls: str = 'sf3d.models.transformers.backbone.TwoStreamInterleaveTransformer'
+        backbone_cls: str = 'sf3d.models.transformers.new_backbone.TwoStreamInterleaveTransformer'
         backbone: dict = {'num_attention_heads': 16, 
                     'attention_head_dim': 64, 
                     'raw_triplane_channels': 1024, 
@@ -118,11 +116,38 @@ class SF3D(nn.Module):
             global_estimator
         )
 
-    def forward(self, rgb_cond, modulation_cond):
+    def forward(self, rgb_cond, mask_cond, c2w_cond, intrinsic_normed_cond):
         
-        x = rearrange(rgb_cond, 'B Nv H W C -> B Nv C H W')
-        output = self.image_tokenizer(x, modulation_cond=modulation_cond)
-        return output
+        camera_embeds: Optional[Float[Tensor, "B Nv Cc"]]
+        camera_embeds = self.camera_embedder(c2w_cond, intrinsic_normed_cond)
+        
+        input_image_tokens: Float[Tensor, "B Nv Cit Nit"] = self.image_tokenizer(
+            rearrange(rgb_cond, 'B Nv H W C -> B Nv C H W'), 
+            modulation_cond=camera_embeds
+        )
+        
+        input_image_tokens = rearrange(
+            input_image_tokens, "B Nv C Nt -> B (Nv Nt) C", Nv=rgb_cond.shape[1]
+        )
+        
+        tokens: Float[Tensor, "B Ct Nt"] = self.tokenizer(rgb_cond.shape[0])
+        
+        tokens = self.backbone(
+            tokens,
+            encoder_hidden_states=input_image_tokens,
+            modulation_cond=None,
+        )
+        
+        non_postprocessed_codes = self.tokenizer.detokenize(tokens)
+        scene_codes = self.post_processor(non_postprocessed_codes)
+        
+        global_dict = {}
+        if self.image_estimator is not None:
+            global_dict.update(
+                self.image_estimator(rgb_cond * mask_cond)
+            )
+        
+        return scene_codes
 
 
 if __name__ == "__main__":
@@ -138,22 +163,25 @@ if __name__ == "__main__":
 
     # 더미 입력 생성
     rgb_cond = torch.randn(batch_size, Nv, H, W, C)
-    modulation_cond = torch.randn(batch_size, Nv, modulation_dim)
+    mask_cond = torch.randn(batch_size, Nv, H, W, C)
+    c2w_cond = torch.randn(batch_size, Nv, 4, 4)
+    intrinsic_normed_cond = torch.randn(batch_size, Nv, 3, 3)
+    #model(rgb_cond, mask_cond, c2w_cond, intrinsic_normed_cond)
     
-    model(rgb_cond, modulation_cond)
-    
-    # torch.onnx.export(
-    #     model,  # 내보낼 모델
-    #     (rgb_cond, modulation_cond),  # 모델 입력
-    #     'image_tokenizer.onnx',  # 저장할 ONNX 파일 이름
-    #     input_names=['rgb_cond', 'modulation_cond'],  # 입력 노드 이름
-    #     output_names=['output'],  # 출력 노드 이름
-    #     dynamic_axes={
-    #         'rgb_cond': {0: 'B', 1: 'Nv'},
-    #         'modulation_cond': {0: 'B', 1: 'Nv'},
-    #         'output': {0: 'B', 1: 'Nv'}
-    #     },
-    #     opset_version=11  # 사용하려는 ONNX opset 버전
-    # )
+    torch.onnx.export(
+        model,  # 내보낼 모델
+        (rgb_cond, mask_cond, c2w_cond, intrinsic_normed_cond),  # 모델 입력
+        'onnx/sf3d.onnx',  # 저장할 ONNX 파일 이름
+        input_names=['rgb_cond', 'mask_cond', 'c2w_cond', 'intrinsic_normed_cond'],  # 입력 노드 이름
+        output_names=['scene_codes'],  # 출력 노드 이름
+        dynamic_axes={
+            'rgb_cond': {0: 'B', 1: 'Nv'},
+            'mask_cond': {0: 'B', 1: 'Nv'},
+            'c2w_cond': {0: 'B', 1: 'Nv'},
+            'intrinsic_normed_cond': {0: 'B', 1: 'Nv'},
+            'scene_codes': {0: 'B'},
+        },
+        opset_version=14,  # 사용하려는 ONNX opset 버전
+    )
     
     
