@@ -185,7 +185,7 @@ if __name__ == "__main__":
     torch.onnx.export(
         model,  # 내보낼 모델
         (rgb_cond, mask_cond, c2w_cond, intrinsic_normed_cond),  # 모델 입력
-        '/disk_hdd/wd_ksw/Table_Recognition/sf3d/onnx/sf3d.onnx',  # 저장할 ONNX 파일 이름
+        'onnx/sf3d.onnx',  # 저장할 ONNX 파일 이름
         input_names=['rgb_cond', 'mask_cond', 'c2w_cond', 'intrinsic_normed_cond'],  # 입력 노드 이름
         output_names=['scene_codes'],  # 출력 노드 이름
         dynamic_axes={
