@@ -87,6 +87,7 @@ if __name__ == "__main__":
     rembg_session = rembg.new_session()
     images = []
     idx = 0
+    print(args.foreground_ratio)
     for image_path in args.image:
 
         def handle_image(image_path, idx):

@@ -6,12 +6,10 @@ import torch.nn as nn
 import numpy as np
 import torch
 import torch.nn.functional as F
-import trimesh
 from einops import rearrange
 from huggingface_hub import hf_hub_download
 from jaxtyping import Float
 from omegaconf import OmegaConf
-from PIL import Image
 from safetensors.torch import load_model
 from torch import Tensor
 from sf3d.models.isosurface import MarchingTetrahedraHelper
@@ -23,15 +21,8 @@ except ImportError:
 from sf3d.models.utils import (
     BaseModule,
     ImageProcessor,
-    convert_data,
-    dilate_fill,
-    dot,
     find_class,
-    float32_to_uint8_np,
-    normalize,
-    scale_tensor,
 )
-from sf3d.utils import create_intrinsic_from_fov_deg, default_cond_c2w, get_device
 
 class SF3D(BaseModule):
     @dataclass

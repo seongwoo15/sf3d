@@ -8,6 +8,9 @@ import torch
 import torch.nn.functional as F
 import trimesh
 import onnxruntime
+import rembg
+from tqdm import tqdm
+
 from einops import rearrange
 from huggingface_hub import hf_hub_download
 from jaxtyping import Float
@@ -15,6 +18,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from safetensors.torch import load_model
 from torch import Tensor
+from sf3d.utils import get_device, remove_background, resize_foreground
 
 from sf3d.models.utils import (
     BaseModule,
@@ -35,7 +39,7 @@ if __name__ == "__main__":
     os.makedirs(output_dir, exist_ok=True)
 
     sess_options = onnxruntime.SessionOptions()
-    sess_options.enable_profiling = True
+    #sess_options.enable_profiling = True
 
     # ONNX 모델 로드
     providers = ["CUDAExecutionProvider"]  # GPU 사용을 위한 설정
@@ -46,26 +50,20 @@ if __name__ == "__main__":
     # ONNX 모델 warmup
     input_name = onnx_session.get_inputs()[0].name
     output_names = [out.name for out in onnx_session.get_outputs()]
-    #onnx_outputs = onnx_session.run(output_names, {input_name: input_list[0][0]})
+    #
 
 
-
-    model = SF3D.from_pretrained(
-        'stabilityai/stable-fast-3d',
-        config_name="config.yaml",
-        weight_name="model.safetensors",
-    )
-
-
+    rembg_session = rembg.new_session()
     images = []
     idx = 0
+    batch_size = 1
     for image_path in ['demo_files/examples/chair1.png']:
 
         def handle_image(image_path, idx):
             image = remove_background(
                 Image.open(image_path).convert("RGBA"), rembg_session
             )
-            image = resize_foreground(image, args.foreground_ratio)
+            image = resize_foreground(image, 0.85)
             os.makedirs(os.path.join(output_dir, str(idx)), exist_ok=True)
             image.save(os.path.join(output_dir, str(idx), "input.png"))
             images.append(image)
@@ -83,17 +81,15 @@ if __name__ == "__main__":
             handle_image(image_path, idx)
             idx += 1
 
-    for i in tqdm(range(0, len(images), args.batch_size)):
-        image = images[i : i + args.batch_size]
+    for i in tqdm(range(0, len(images), batch_size)):
+        image = images[i : i + batch_size]
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
-        with torch.no_grad():
-            with torch.autocast(
-                device_type=device, dtype=torch.float16
-            ) if "cuda" in device else nullcontext():
-                mesh, glob_dict = model.run_image(
-                    image,
-                    bake_resolution=args.texture_resolution,
-                    remesh=args.remesh_option,
-                    vertex_count=args.target_vertex_count,
-                )
+            
+        # onnx_outputs = onnx_session.run(output_names, {input_name: input_list[0][0]})
+        # mesh, glob_dict = model.run_image(
+        #     image,
+        #     bake_resolution=args.texture_resolution,
+        #     remesh=args.remesh_option,
+        #     vertex_count=args.target_vertex_count,
+        # )
