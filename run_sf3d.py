@@ -1,6 +1,4 @@
 import os
-from contextlib import nullcontext
-from dataclasses import dataclass, field
 from typing import Any, List, Literal, Optional, Tuple, Union
 import torch.nn as nn
 import numpy as np
@@ -11,27 +9,166 @@ import onnxruntime
 import rembg
 from tqdm import tqdm
 
-from einops import rearrange
-from huggingface_hub import hf_hub_download
-from jaxtyping import Float
-from omegaconf import OmegaConf
 from PIL import Image
-from safetensors.torch import load_model
 from torch import Tensor
-from sf3d.utils import get_device, remove_background, resize_foreground
 
-from sf3d.models.utils import (
-    BaseModule,
-    ImageProcessor,
-    convert_data,
-    dilate_fill,
-    dot,
-    find_class,
-    float32_to_uint8_np,
-    normalize,
-    scale_tensor,
-)
-from sf3d.utils import create_intrinsic_from_fov_deg, default_cond_c2w, get_device
+import PIL
+
+
+def remove_background(
+    image: Image,
+    rembg_session: Any = None,
+    force: bool = False,
+    **rembg_kwargs,
+) -> Image:
+    do_remove = True
+    if image.mode == "RGBA" and image.getextrema()[3][0] < 255:
+        do_remove = False
+    do_remove = do_remove or force
+    if do_remove:
+        image = rembg.remove(image, session=rembg_session, **rembg_kwargs)
+    return image
+
+
+def resize_foreground(
+    image: Image,
+    ratio: float,
+) -> Image:
+    image = np.array(image)
+    assert image.shape[-1] == 4
+    alpha = np.where(image[..., 3] > 0.5)
+    y1, y2, x1, x2 = (
+        alpha[0].min(),
+        alpha[0].max(),
+        alpha[1].min(),
+        alpha[1].max(),
+    )
+    # crop the foreground
+    fg = image[y1:y2, x1:x2]
+    # pad to square
+    size = max(fg.shape[0], fg.shape[1])
+    ph0, pw0 = (size - fg.shape[0]) // 2, (size - fg.shape[1]) // 2
+    ph1, pw1 = size - fg.shape[0] - ph0, size - fg.shape[1] - pw0
+    new_image = np.pad(
+        fg,
+        ((ph0, ph1), (pw0, pw1), (0, 0)),
+        mode="constant",
+        constant_values=((0, 0), (0, 0), (0, 0)),
+    )
+
+    # compute padding according to the ratio
+    new_size = int(new_image.shape[0] / ratio)
+    # pad to size, double side
+    ph0, pw0 = (new_size - size) // 2, (new_size - size) // 2
+    ph1, pw1 = new_size - size - ph0, new_size - size - pw0
+    new_image = np.pad(
+        new_image,
+        ((ph0, ph1), (pw0, pw1), (0, 0)),
+        mode="constant",
+        constant_values=((0, 0), (0, 0), (0, 0)),
+    )
+    new_image = Image.fromarray(new_image, mode="RGBA")
+    return new_image
+
+def handle_image(image_path, idx):
+    image = remove_background(
+        Image.open(image_path).convert("RGBA"), rembg_session
+    )
+    image = resize_foreground(image, 0.85)
+    os.makedirs(os.path.join(output_dir, str(idx)), exist_ok=True)
+    image.save(os.path.join(output_dir, str(idx), "input.png"))
+    images.append(image)
+    
+class ImageProcessor:
+    def convert_and_resize(
+        self,
+        image: Union[PIL.Image.Image, np.ndarray, torch.Tensor],
+        size: int,
+    ):
+        if isinstance(image, PIL.Image.Image):
+            image = torch.from_numpy(np.array(image).astype(np.float32) / 255.0)
+        elif isinstance(image, np.ndarray):
+            if image.dtype == np.uint8:
+                image = torch.from_numpy(image.astype(np.float32) / 255.0)
+            else:
+                image = torch.from_numpy(image)
+        elif isinstance(image, torch.Tensor):
+            pass
+
+        batched = image.ndim == 4
+
+        if not batched:
+            image = image[None, ...]
+        image = F.interpolate(
+            image.permute(0, 3, 1, 2),
+            (size, size),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        ).permute(0, 2, 3, 1)
+        if not batched:
+            image = image[0]
+        return image
+
+    def __call__(
+        self,
+        image: Union[
+            PIL.Image.Image,
+            np.ndarray,
+            torch.FloatTensor,
+            List[PIL.Image.Image],
+            List[np.ndarray],
+            List[torch.FloatTensor],
+        ],
+        size: int,
+    ) -> Any:
+        if isinstance(image, (np.ndarray, torch.FloatTensor)) and image.ndim == 4:
+            image = self.convert_and_resize(image, size)
+        else:
+            if not isinstance(image, list):
+                image = [image]
+            image = [self.convert_and_resize(im, size) for im in image]
+            image = torch.stack(image, dim=0)
+        return image
+
+def get_intrinsic_from_fov(fov, H, W, bs=-1):
+    focal_length = 0.5 * H / np.tan(0.5 * fov)
+    intrinsic = np.identity(3, dtype=np.float32)
+    intrinsic[0, 0] = focal_length
+    intrinsic[1, 1] = focal_length
+    intrinsic[0, 2] = W / 2.0
+    intrinsic[1, 2] = H / 2.0
+
+    if bs > 0:
+        intrinsic = intrinsic[None].repeat(bs, axis=0)
+
+    return torch.from_numpy(intrinsic)
+
+def create_intrinsic_from_fov_deg(fov_deg: float, cond_height: int, cond_width: int):
+    intrinsic = get_intrinsic_from_fov(
+        np.deg2rad(fov_deg),
+        H=cond_height,
+        W=cond_width,
+    )
+    intrinsic_normed_cond = intrinsic.clone()
+    intrinsic_normed_cond[..., 0, 2] /= cond_width
+    intrinsic_normed_cond[..., 1, 2] /= cond_height
+    intrinsic_normed_cond[..., 0, 0] /= cond_width
+    intrinsic_normed_cond[..., 1, 1] /= cond_height
+
+    return intrinsic, intrinsic_normed_cond
+
+
+def default_cond_c2w(distance: float):
+    c2w_cond = torch.as_tensor(
+        [
+            [0, 0, 1, distance],
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1],
+        ]
+    ).float()
+    return c2w_cond
 
 if __name__ == "__main__":
 
@@ -59,14 +196,7 @@ if __name__ == "__main__":
     batch_size = 1
     for image_path in ['demo_files/examples/chair1.png']:
 
-        def handle_image(image_path, idx):
-            image = remove_background(
-                Image.open(image_path).convert("RGBA"), rembg_session
-            )
-            image = resize_foreground(image, 0.85)
-            os.makedirs(os.path.join(output_dir, str(idx)), exist_ok=True)
-            image.save(os.path.join(output_dir, str(idx), "input.png"))
-            images.append(image)
+
 
         if os.path.isdir(image_path):
             image_paths = [
@@ -143,9 +273,3 @@ if __name__ == "__main__":
                 batch["intrinsic_cond"] = batch["intrinsic_cond"].unsqueeze(1)
                 batch["intrinsic_normed_cond"] = batch["intrinsic_normed_cond"].unsqueeze(1)
         # onnx_outputs = onnx_session.run(output_names, {input_name: input_list[0][0]})
-        # mesh, glob_dict = model.run_image(
-        #     image,
-        #     bake_resolution=args.texture_resolution,
-        #     remesh=args.remesh_option,
-        #     vertex_count=args.target_vertex_count,
-        # )
